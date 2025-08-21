@@ -20,6 +20,7 @@ attachment::att_amend_desc()
 
 ## Add modules ----
 ## Create a module infrastructure in R/
+golem::add_module(name = "chat", with_test = TRUE)  # crée R/mod_chat.R
 golem::add_module(name = "name_of_module1", with_test = TRUE) # Name of the module
 golem::add_module(name = "name_of_module2", with_test = TRUE) # Name of the module
 
@@ -28,11 +29,15 @@ golem::add_module(name = "name_of_module2", with_test = TRUE) # Name of the modu
 golem::add_fct("helpers", with_test = TRUE)
 golem::add_utils("helpers", with_test = TRUE)
 
+## Mes dépendances
+usethis::use_package("htmltools")
+usethis::use_package("bslib")
+
 ## External resources
 ## Creates .js and .css files at inst/app/www
 golem::add_js_file("script")
 golem::add_js_handler("handlers")
-golem::add_css_file("custom")
+golem::add_css_file("chat")
 golem::add_sass_file("custom")
 golem::add_any_file("file.json")
 

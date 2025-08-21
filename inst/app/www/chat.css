@@ -1,0 +1,86 @@
+/* --- Typo & variables --- */
+/* Optionnel : si autorisé en réseau, décommenter pour charger Inter */
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;600&display=swap');
+
+:root{
+  --font-sans: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue",
+               Arial, "Apple Color Emoji", "Segoe UI Emoji";
+  --bubble-user-bg: #f8fafc;
+  --bubble-user-bd: #e6edf5;
+  --bubble-bot-bg:  #eef6ff;
+  --bubble-bot-bd:  #d8e9ff;
+  --label-muted:    #667085;
+  --time-muted:     #98a2b3;
+
+  /* confort de lecture */
+  --radius: 18px;
+  --pad-y: 12px;   /* ↑ padding vertical augmenté */
+  --pad-x: 20px;   /* → padding horizontal augmenté */
+  --text-size: 15px;
+  --line-height: 1.55;
+}
+
+html, body{
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* --- Conteneur du chat --- */
+.chatlog{
+  background: #fff;
+  padding: 14px;                 /* un peu plus d'air */
+  border: 1px solid #eaeef3;
+  border-radius: 14px;
+  height: 45vh;
+  overflow: auto;
+  scroll-behavior: smooth;
+}
+
+/* --- Lignes de message --- */
+.msg{ display:flex; margin: 10px 0; }   /* espace vertical plus généreux */
+.msg-user{ justify-content: flex-start; }
+.msg-assistant{ justify-content: flex-end; }
+
+/* --- Bulles --- */
+.bubble{
+  max-width: 80%;                          /* largeur un peu plus grande */
+  padding: var(--pad-y) var(--pad-x);      /* padding augmenté */
+  border-radius: var(--radius);
+  box-shadow: 0 1px 2px rgba(16,24,40,.04);
+}
+.msg-user .bubble{
+  background: var(--bubble-user-bg);
+  border: 1px solid var(--bubble-user-bd);
+}
+.msg-assistant .bubble{
+  background: var(--bubble-bot-bg);
+  border: 1px solid var(--bubble-bot-bd);
+}
+
+/* --- Textes --- */
+.label{
+  font-size: 12.5px;
+  color: var(--label-muted);
+  margin-bottom: 6px;
+  letter-spacing: .2px;
+  font-weight: 600;
+}
+.text{
+  font-size: var(--text-size);
+  line-height: var(--line-height);   /* lecture plus confortable */
+  white-space: pre-wrap;
+  word-wrap: break-word;
+  margin: 0;
+}
+.time{
+  font-size: 11.5px;
+  color: var(--time-muted);
+  margin-top: 8px;
+  text-align: right;
+}
+
+/* --- Mobile: bulles plus larges --- */
+@media (max-width: 768px){
+  .bubble{ max-width: 90%; }
+}
