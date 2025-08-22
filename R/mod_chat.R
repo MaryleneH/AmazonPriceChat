@@ -22,7 +22,7 @@ mod_chat_ui <- function(id){
         shiny::textInput(
           ns("msg"),
           NULL,
-          placeholder = "Collez l’URL d’un produit ou posez une question…",
+          placeholder = "Collez l’URL d’un produit ou demandez « prix des jupes »…",
           width = "100%"
         )
       ),
@@ -73,16 +73,15 @@ mod_chat_server <- function(id){
       append_msg("user", userq)
       shiny::updateTextInput(session, "msg", value = "")
 
-      # 1) Cas URL produit -> extraction prix + log
+      # 1) URL produit -> extraction immédiate + log
       if (is_url(userq)) {
         info <- try(mml_normalize(mml_price_by_url(userq)), silent = TRUE)
         if (inherits(info, "try-error") || is.null(info)) {
           append_msg("assistant", "Désolé, je n’ai pas réussi à lire le prix de cette page.")
-          session$sendCustomMessage("scroll_bottom", list(id = ns("log")))
-          return(invisible())
+          session$sendCustomMessage("scroll_bottom", list(id = ns("log"))); return(invisible())
         }
 
-        # Journalisation (best-effort, sans bloquer l'UI)
+        # journalisation best-effort
         try(storage_write_price(info), silent = TRUE)
 
         prix <- if (!is.null(info$price$amount))
@@ -101,7 +100,7 @@ mod_chat_server <- function(id){
              <div>
                <strong>%s</strong><br/>Prix : %s<br/>
                <a href='%s' target='_blank' rel='noopener'>Voir la page</a><br/>
-               <small>source&nbsp;: %s</small>
+               <small>source : %s</small>
              </div>
            </div>",
           img,
@@ -110,33 +109,49 @@ mod_chat_server <- function(id){
           htmltools::htmlEscape(info$url %||% "#"),
           htmltools::htmlEscape(info$source %||% "?")
         )
-
         append_msg("assistant", html, is_html = TRUE)
-        session$sendCustomMessage("scroll_bottom", list(id = ns("log")))
-        return(invisible())
+        session$sendCustomMessage("scroll_bottom", list(id = ns("log"))); return(invisible())
       }
 
-      # 2) Sinon, on garde ton flux LLM existant (search/get_items)
+      # 2) Requêtes "prix de …" -> agent R MML (découverte + prix)
+      norm <- tolower(iconv(userq, from = "", to = "ASCII//TRANSLIT"))
+      if (grepl("\\bprix\\b", norm)) {
+        tgt <- sub(".*\\bprix\\b(\\s*(des|de la|de l'|du)\\s*)?", "", norm)
+        tgt <- trimws(tgt); if (!nzchar(tgt)) tgt <- userq
+        res <- try(mml_agent_prices(tgt, n = 10), silent = TRUE)
+        if (!inherits(res, "try-error") && length(res$results)) {
+          append_msg("assistant", render_search(res), is_html = TRUE)
+        } else {
+          append_msg("assistant", "Je n’ai rien trouvé via la recherche. Peux-tu coller l’URL d’un produit ?")
+        }
+        session$sendCustomMessage("scroll_bottom", list(id = ns("log"))); return(invisible())
+      }
+
+      # 3) Fallback / compat : router LLM (pour Amazon demain)
       action <- try(llm_route(userq), silent = TRUE)
 
-      if (inherits(action, "try-error") || is.null(action$name)) {
-        append_msg("assistant",
-                   "Collez l’URL d’un produit Make My Lemonade et je récupère son prix 💶📎")
-        session$sendCustomMessage("scroll_bottom", list(id = ns("log")))
-        return(invisible())
-      }
+      if (!inherits(action, "try-error") && is.list(action) && !is.null(action$name)) {
+        if (identical(action$name, "search_amazon")) {
+          res  <- provider_search(action$args$q, action$args$page %||% 1)
+          html <- render_search(res)
+          append_msg("assistant", html, is_html = TRUE)
 
-      if (identical(action$name, "search_amazon")) {
-        res  <- provider_search(action$args$q, action$args$page %||% 1)
-        html <- render_search(res)                            # HTML sécurisé dans render_search()
-      } else if (identical(action$name, "get_items")) {
-        res  <- provider_get_items(action$args$asins %||% character())
-        html <- render_items(res)
+        } else if (identical(action$name, "get_items")) {
+          res  <- provider_get_items(action$args$asins %||% character())
+          html <- render_items(res)
+          append_msg("assistant", html, is_html = TRUE)
+
+        } else {
+          # action non reconnue -> message neutre
+          append_msg("assistant",
+                     "Je peux chercher un article (mots-clés) ou afficher le prix via identifiant/URL.")
+        }
       } else {
-        html <- "Je peux chercher un article (mots-clés) ou afficher le prix via identifiant/URL."
+        # pas d’action, dernier filet de sécurité
+        append_msg("assistant",
+                   "Collez l’URL d’un produit Make My Lemonade pour un relevé immédiat 💶📎")
       }
 
-      append_msg("assistant", html, is_html = TRUE)
       session$sendCustomMessage("scroll_bottom", list(id = ns("log")))
     })
   })

@@ -1,5 +1,5 @@
-#' @title Helpers de rendu HTML pour la zone de chat
 #' @keywords internal
+#' @noRd
 
 `%||%` <- function(x, y) if (is.null(x)) y else x
 
@@ -11,7 +11,7 @@
 
 .render_img <- function(img){
   if (is.null(img) || !nzchar(img)) return("")
-  if (grepl("^//", img)) img <- paste0("https:", img)  # normalise cdn.shopify
+  if (grepl("^//", img)) img <- paste0("https:", img)
   sprintf(
     "<img src='%s' style='width:64px;height:64px;object-fit:cover;border-radius:8px;border:1px solid #eee'/>",
     htmltools::htmlEscape(img)
@@ -34,16 +34,16 @@
   </div>", img, title, ptxt, url)
 }
 
-#' Rendu HTML d'une recherche (liste de résultats)
 #' @keywords internal
+#' @noRd
 render_search <- function(res){
   items <- res$results %||% res$items %||% list()
   if (!length(items)) return("Aucun résultat.")
   paste0(vapply(items, .render_card, FUN.VALUE = character(1)), collapse = "")
 }
 
-#' Rendu HTML d'items (ex. provider_get_items)
 #' @keywords internal
+#' @noRd
 render_items <- function(res){
   items <- res$items %||% res$results %||% list()
   if (!length(items)) return("Aucun article.")

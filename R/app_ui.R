@@ -9,9 +9,10 @@ app_ui <- function(request) {
     # Leave this function for adding external resources
     golem_add_external_resources(),
     # Your application UI logic
-    bslib::page_fluid(
-      theme = bslib::bs_theme(bootswatch = "flatly"),
-      mod_chat_ui("chat_1")
+    bslib::page_navbar(
+      title = "AmazonPriceChat",
+      bslib::nav_panel("Chat",      mod_chat_ui("chat_1")),
+      bslib::nav_panel("Historique", mod_history_ui("hist_1"))
     )
   )
 }

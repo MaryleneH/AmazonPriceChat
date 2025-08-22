@@ -21,6 +21,7 @@ attachment::att_amend_desc()
 ## Add modules ----
 ## Create a module infrastructure in R/
 golem::add_module(name = "chat", with_test = TRUE)  # crée R/mod_chat.R
+golem::add_module(name = "history")
 golem::add_module(name = "name_of_module1", with_test = TRUE) # Name of the module
 golem::add_module(name = "name_of_module2", with_test = TRUE) # Name of the module
 
@@ -37,7 +38,8 @@ usethis::use_r("shopify-provider")
 usethis::use_r("mml_provider")
 usethis::use_r("storage")
 usethis::use_r("healthcheck")
-usethis::use_r("llm_client")
+usethis::use_r("agent_mml")
+usethis::use_r("llm_tools_agent")
 usethis::use_r("llm_route")
 usethis::use_r("renderers")
 

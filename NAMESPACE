@@ -2,6 +2,7 @@
 
 export(llm_healthcheck)
 export(llm_route)
+export(mod_history_server)
 export(run_app)
 import(bslib)
 import(htmltools)
