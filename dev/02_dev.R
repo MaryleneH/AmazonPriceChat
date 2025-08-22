@@ -32,6 +32,10 @@ golem::add_utils("helpers", with_test = TRUE)
 ## Mes dépendances
 usethis::use_package("htmltools")
 usethis::use_package("bslib")
+usethis::use_package("ellmer")
+usethis::use_package("mcptools")
+usethis::use_package("jsonlite")
+usethis::use_package("glue")
 
 ## External resources
 ## Creates .js and .css files at inst/app/www

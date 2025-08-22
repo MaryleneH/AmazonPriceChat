@@ -11,8 +11,12 @@ BugReports: https://github.com/MaryleneH/AmazonPriceChat/issues
 Imports: 
     bslib,
     config,
+    ellmer,
+    glue,
     golem,
     htmltools,
+    jsonlite,
+    mcptools,
     shiny
 Encoding: UTF-8
 LazyData: true
