@@ -29,6 +29,15 @@ golem::add_module(name = "name_of_module2", with_test = TRUE) # Name of the modu
 golem::add_fct("helpers", with_test = TRUE)
 golem::add_utils("helpers", with_test = TRUE)
 
+
+## Fonctions
+
+usethis::use_r("provider")
+usethis::use_r("shopify-provider")
+usethis::use_r("healthcheck")
+usethis::use_r("llm_client")
+usethis::use_r("llm_route")
+
 ## Mes dépendances
 usethis::use_package("htmltools")
 usethis::use_package("bslib")

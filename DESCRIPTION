@@ -15,6 +15,7 @@ Imports:
     glue,
     golem,
     htmltools,
+    httr2,
     jsonlite,
     mcptools,
     shiny

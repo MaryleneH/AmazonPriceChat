@@ -6,7 +6,7 @@
 #'
 #' @noRd
 #'
-#' @import bslib
+#' @import bslib htmltools
 #' @importFrom shiny NS tagList
 mod_chat_ui <- function(id){
   ns <- shiny::NS(id)
@@ -50,14 +50,25 @@ mod_chat_server <- function(id){
     observeEvent(input$send, {
       req(nzchar(input$msg))
       userq <- input$msg
-      append_msg("user", userq)
-
-      # placeholder avant LLM
-      reply <- "LLM non configuré pour l’instant. Le squelette fonctionne !"
-      append_msg("assistant", reply)
-
+      append_msg(ns, "user", htmltools::htmlEscape(userq))
       updateTextInput(session, "msg", value = "")
+
+      action <- llm_route(userq)  # ← décision par le LLM
+
+      if (identical(action$name, "search_amazon")) {
+        res  <- provider_search(action$args$q, action$args$page %||% 1)
+        html <- render_search(res)
+      } else if (identical(action$name, "get_items")) {
+        res  <- provider_get_items(action$args$asins %||% character())
+        html <- render_items(res)
+      } else {
+        html <- "Je peux chercher un article (mots-clés) ou afficher le prix via identifiant."
+      }
+
+      append_msg(ns, "assistant", html)
+      session$sendCustomMessage("scroll_bottom", list(id = ns("log")))
     })
+
   })
 }
 
