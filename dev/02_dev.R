@@ -40,6 +40,7 @@ usethis::use_r("storage")
 usethis::use_r("healthcheck")
 usethis::use_r("agent_mml")
 usethis::use_r("llm_tools_agent")
+usethis::use_r("llm_client")
 usethis::use_r("llm_route")
 usethis::use_r("renderers")
 
@@ -57,6 +58,7 @@ usethis::use_package("jsonlite")
 usethis::use_package("DBI")
 usethis::use_package("duckdb")
 usethis::use_package("arrow")
+usethis::use_package("DT")
 
 ## External resources
 ## Creates .js and .css files at inst/app/www

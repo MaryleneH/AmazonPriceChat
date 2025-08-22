@@ -1,6 +1,10 @@
 # --- Utils ---------------------------------------------------------------
 
 sanitize_domain <- function(x){
+  if (tolower(Sys.getenv("PROVIDER","mml")) != "shopify") {
+    stop("Shopify désactivé (PROVIDER != 'shopify').", call. = FALSE)
+  }
+
   x <- trimws(x)
   x <- sub("^https?://", "", x)
   sub("/+$", "", x)
@@ -10,12 +14,20 @@ sanitize_domain <- function(x){
 # --- Endpoint & requête JSON-RPC ----------------------------------------
 
 shopify_mcp_endpoint <- function(){
+  if (tolower(Sys.getenv("PROVIDER","mml")) != "shopify") {
+    stop("Shopify désactivé (PROVIDER != 'shopify').", call. = FALSE)
+  }
+
   dom <- sanitize_domain(Sys.getenv("SHOPIFY_STORE_DOMAIN"))
   if (!nzchar(dom)) stop("SHOPIFY_STORE_DOMAIN manquant dans .Renviron")
   sprintf("https://%s/api/mcp", dom)
 }
 
 .shopify_req <- function(method, params = list(), id = 1L){
+  if (tolower(Sys.getenv("PROVIDER","mml")) != "shopify") {
+    stop("Shopify désactivé (PROVIDER != 'shopify').", call. = FALSE)
+  }
+
   endpoint <- shopify_mcp_endpoint()
   body <- list(jsonrpc = "2.0", method = method, id = id, params = params)
   resp <- httr2::request(endpoint) |>
@@ -28,12 +40,20 @@ shopify_mcp_endpoint <- function(){
 }
 
 shopify_tools_list <- function(){
+  if (tolower(Sys.getenv("PROVIDER","mml")) != "shopify") {
+    stop("Shopify désactivé (PROVIDER != 'shopify').", call. = FALSE)
+  }
+
   .shopify_req("tools/list", params = list())
 }
 
 # --- Recherche produits ---------------------------------------------------
 
 shopify_search <- function(q, limit = 10, after = NULL, country = NULL, language = NULL){
+  if (tolower(Sys.getenv("PROVIDER","mml")) != "shopify") {
+    stop("Shopify désactivé (PROVIDER != 'shopify').", call. = FALSE)
+  }
+
   args <- list(query = q, context = "reader", limit = limit)
   if (!is.null(after)) args$after <- after
   if (!is.null(country))  args$country  <- country
@@ -76,6 +96,10 @@ shopify_search <- function(q, limit = 10, after = NULL, country = NULL, language
 # --- Récupérer le prix d'un produit par URL -------------------------------
 
 shopify_price_by_url <- function(product_url){
+  if (tolower(Sys.getenv("PROVIDER","mml")) != "shopify") {
+    stop("Shopify désactivé (PROVIDER != 'shopify').", call. = FALSE)
+  }
+
   # extrait la dernière partie utile (handle)
   path <- sub("^https?://[^/]+/", "", product_url)
   handle <- sub(".*/products/([^/?#]+).*", "\\1", path)
@@ -107,6 +131,10 @@ shopify_price_by_url <- function(product_url){
 # --- Adapter "get_items" (MVP : re-cherche par id/texte) ------------------
 
 shopify_get_items <- function(ids){
+  if (tolower(Sys.getenv("PROVIDER","mml")) != "shopify") {
+    stop("Shopify désactivé (PROVIDER != 'shopify').", call. = FALSE)
+  }
+
   found <- unlist(lapply(ids, function(id) shopify_search(id, limit = 10)$results), recursive = FALSE)
   list(items = found, fetched_at = Sys.time())
 }

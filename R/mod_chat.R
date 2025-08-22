@@ -1,17 +1,16 @@
 #' chat UI Function
 #'
-#' @description A shiny Module.
+#' @description Module de chat minimal avec rendu cartes produits.
 #'
 #' @param id,input,output,session Internal parameters for {shiny}.
 #'
 #' @noRd
-#'
 #' @import bslib htmltools
 #' @importFrom shiny NS tagList
 mod_chat_ui <- function(id){
   ns <- shiny::NS(id)
   bslib::card(
-    bslib::card_header("Amazon Price Chat (MVP)"),
+    bslib::card_header("Amazon / MML Price Chat (MVP)"),
     shiny::div(
       id = ns("log"),
       style = "height:45vh; overflow:auto; border:1px solid #eee; padding:8px;"
@@ -20,20 +19,14 @@ mod_chat_ui <- function(id){
       shiny::column(
         9,
         shiny::textInput(
-          ns("msg"),
-          NULL,
-          placeholder = "Collez l’URL d’un produit ou demandez « prix des jupes »…",
+          ns("msg"), NULL,
+          placeholder = "Ex : donne-moi le prix des jupes (2 articles max)",
           width = "100%"
         )
       ),
       shiny::column(
         3,
-        shiny::actionButton(
-          ns("send"),
-          "Envoyer",
-          class = "btn-primary",
-          width = "100%"
-        )
+        shiny::actionButton(ns("send"), "Envoyer", class = "btn-primary", width = "100%")
       )
     )
   )
@@ -46,119 +39,155 @@ mod_chat_server <- function(id){
   moduleServer(id, function(input, output, session){
     ns <- session$ns
     `%||%` <- function(x,y) if (is.null(x)) y else x
-    is_url <- function(x) grepl("^https?://", x, ignore.case = TRUE)
+
+    # -- Helpers -------------------------------------------------------------
+
+    .format_price <- function(p){
+      if (is.null(p) || is.null(p$amount)) return("")
+      cur <- p$currency %||% "EUR"
+      amt <- tryCatch(as.numeric(p$amount), error = function(e) NA_real_)
+      if (is.na(amt)) return("")
+      paste0(formatC(amt, big.mark = " ", decimal.mark = ",", digits = 2, format = "f"), " ", cur)
+    }
+
+    .extract_product_urls <- function(txt){
+      if (is.null(txt) || !nzchar(txt)) return(character())
+      # récupère des URLs vers makemylemonade.com (peut inclure /fr-xx/products/)
+      m <- gregexpr("(https?://[^\\s)\\]]*makemylemonade\\.com[^\\s)\\]]*)", txt, perl = TRUE)
+      urls <- regmatches(txt, m)[[1]]
+      urls <- unique(gsub("[\\)\\]\\.,]+$", "", urls)) # nettoie ponctuation finale
+      urls
+    }
+
+    .card_html <- function(title, price_txt, url, img){
+      # Une carte produit simple (utilise classes .product-card si ton CSS les définit)
+      htmltools::tags$div(
+        class = "product-card",
+        style = "display:flex;gap:12px;align-items:flex-start;border:1px solid #eee;border-radius:12px;padding:10px;margin:8px 0;",
+        if (!is.null(img) && nzchar(img))
+          htmltools::tags$img(src = img, style = "width:80px;height:100px;object-fit:cover;border-radius:8px;"),
+        htmltools::tags$div(
+          style="flex:1;",
+          htmltools::tags$div(style="font-weight:600;margin-bottom:4px;", title %||% ""),
+          htmltools::tags$div(style="color:#555;margin-bottom:6px;", price_txt %||% ""),
+          if (!is.null(url) && nzchar(url))
+            htmltools::tags$a(href = url, target = "_blank", rel="noopener", "Voir le produit →")
+        )
+      )
+    }
+
+    .render_cards_from_results <- function(items, max_n = 10L){
+      if (length(items) == 0) return(NULL)
+      keep <- utils::head(items, max_n)
+      htmltools::tagList(lapply(keep, function(it){
+        price_txt <- .format_price(it$price)
+        .card_html(it$title %||% "", price_txt, it$url %||% "", it$image %||% "")
+      }))
+    }
+
+    .render_cards_from_urls <- function(urls, max_n = 10L){
+      if (length(urls) == 0) return(NULL)
+      urls <- utils::head(urls, max_n)
+      found <- lapply(urls, function(u){
+        # utilise ta fonction mml_price_by_url(u)
+        info <- tryCatch(mml_price_by_url(u), error = function(e) NULL)
+        if (is.null(info)) return(NULL)
+        price_txt <- .format_price(info$price)
+        .card_html(info$title %||% "", price_txt, info$url %||% u, info$image %||% "")
+      })
+      found <- Filter(Negate(is.null), found)
+      if (!length(found)) return(NULL)
+      htmltools::tagList(found)
+    }
+
+    .format_agent_reply <- function(x){
+      # petit formateur pour le texte de l’agent (italiques / gras / sauts)
+      if (is.null(x) || !nzchar(x)) return("")
+      x <- gsub("\n", "<br/>", htmltools::htmlEscape(x), fixed = TRUE)
+      # gras **...** -> <b>...</b>
+      x <- gsub("\\*\\*(.+?)\\*\\*", "<b>\\1</b>", x, perl = TRUE)
+      # italiques *...* -> <i>...</i>
+      x <- gsub("(?<!\\*)\\*(?!\\*)(.+?)(?<!\\*)\\*(?!\\*)", "<i>\\1</i>", x, perl = TRUE)
+      x
+    }
 
     append_msg <- function(role, text, is_html = FALSE){
       shiny::insertUI(
         selector = paste0("#", ns("log")),
         where = "beforeEnd",
-        ui = shiny::div(
+        ui = htmltools::tags$div(
           class = paste("msg", ifelse(role == "user", "msg-user", "msg-assistant")),
-          shiny::div(
-            class = "bubble",
-            shiny::div(class = "label", if (role == "user") "🧑‍💻 Vous" else "🤖 Assistant"),
-            shiny::div(
-              class = "text",
-              if (isTRUE(is_html)) shiny::HTML(text) else shiny::HTML(htmltools::htmlEscape(text))
-            ),
-            shiny::div(class = "time", format(Sys.time(), "%H:%M"))
+          htmltools::tags$div(class = "bubble",
+                              htmltools::tags$div(class = "label", if (role == "user") "🧑‍💻 Vous" else "🤖 Assistant"),
+                              htmltools::tags$div(
+                                class = "text",
+                                if (isTRUE(is_html)) htmltools::HTML(text) else htmltools::HTML(htmltools::htmlEscape(text))
+                              ),
+                              htmltools::tags$div(class = "time", format(Sys.time(), "%H:%M"))
           )
         )
       )
     }
 
+    # -- Observers -----------------------------------------------------------
+
     observeEvent(input$send, {
       req(nzchar(input$msg))
-      userq <- trimws(input$msg)
+      userq <- input$msg
       append_msg("user", userq)
       shiny::updateTextInput(session, "msg", value = "")
 
-      # 1) URL produit -> extraction immédiate + log
-      if (is_url(userq)) {
-        info <- try(mml_normalize(mml_price_by_url(userq)), silent = TRUE)
-        if (inherits(info, "try-error") || is.null(info)) {
-          append_msg("assistant", "Désolé, je n’ai pas réussi à lire le prix de cette page.")
-          session$sendCustomMessage("scroll_bottom", list(id = ns("log"))); return(invisible())
-        }
+      # Router (tu conserves llm_route pour Amazon plus tard)
+      action <- llm_route(userq)
 
-        # journalisation best-effort
-        try(storage_write_price(info), silent = TRUE)
+      if (identical(action$name, "search_amazon")) {
+        res  <- provider_search(action$args$q, action$args$page %||% 1)
+        html <- render_search(res)
 
-        prix <- if (!is.null(info$price$amount))
-          sprintf("%.2f %s", info$price$amount, info$price$currency) else "—"
+      } else if (identical(action$name, "get_items")) {
+        res  <- provider_get_items(action$args$asins %||% character())
+        html <- render_items(res)
 
-        img <- if (!is.null(info$image) && nzchar(info$image)) {
-          sprintf(
-            "<img src='%s' style='width:72px;height:72px;object-fit:cover;border-radius:10px;border:1px solid #eee;margin-right:10px'/>",
-            htmltools::htmlEscape(info$image)
-          )
-        } else ""
-
-        html <- sprintf(
-          "<div style='display:flex;align-items:center;gap:10px'>
-             %s
-             <div>
-               <strong>%s</strong><br/>Prix : %s<br/>
-               <a href='%s' target='_blank' rel='noopener'>Voir la page</a><br/>
-               <small>source : %s</small>
-             </div>
-           </div>",
-          img,
-          htmltools::htmlEscape(info$title %||% "Produit"),
-          prix,
-          htmltools::htmlEscape(info$url %||% "#"),
-          htmltools::htmlEscape(info$source %||% "?")
-        )
-        append_msg("assistant", html, is_html = TRUE)
-        session$sendCustomMessage("scroll_bottom", list(id = ns("log"))); return(invisible())
-      }
-
-      # 2) Requêtes "prix de …" -> agent R MML (découverte + prix)
-      norm <- tolower(iconv(userq, from = "", to = "ASCII//TRANSLIT"))
-      if (grepl("\\bprix\\b", norm)) {
-        tgt <- sub(".*\\bprix\\b(\\s*(des|de la|de l'|du)\\s*)?", "", norm)
-        tgt <- trimws(tgt); if (!nzchar(tgt)) tgt <- userq
-        res <- try(mml_agent_prices(tgt, n = 10), silent = TRUE)
-        if (!inherits(res, "try-error") && length(res$results)) {
-          append_msg("assistant", render_search(res), is_html = TRUE)
-        } else {
-          append_msg("assistant", "Je n’ai rien trouvé via la recherche. Peux-tu coller l’URL d’un produit ?")
-        }
-        session$sendCustomMessage("scroll_bottom", list(id = ns("log"))); return(invisible())
-      }
-
-      # 3) Fallback / compat : router LLM (pour Amazon demain)
-      action <- try(llm_route(userq), silent = TRUE)
-
-      if (!inherits(action, "try-error") && is.list(action) && !is.null(action$name)) {
-        if (identical(action$name, "search_amazon")) {
-          res  <- provider_search(action$args$q, action$args$page %||% 1)
-          html <- render_search(res)
-          append_msg("assistant", html, is_html = TRUE)
-
-        } else if (identical(action$name, "get_items")) {
-          res  <- provider_get_items(action$args$asins %||% character())
-          html <- render_items(res)
-          append_msg("assistant", html, is_html = TRUE)
-
-        } else {
-          # action non reconnue -> message neutre
-          append_msg("assistant",
-                     "Je peux chercher un article (mots-clés) ou afficher le prix via identifiant/URL.")
-        }
       } else {
-        # pas d’action, dernier filet de sécurité
-        append_msg("assistant",
-                   "Collez l’URL d’un produit Make My Lemonade pour un relevé immédiat 💶📎")
+        # ---- Chemin Agent Make My Lemonade --------------------------------
+        nres <- .extract_n_results(userq, default = 10L)  # si tu as déjà ce helper
+        html <- tryCatch({
+          shiny::withProgress(message = "Je cherche sur Make My Lemonade…", value = 0.1, {
+            ans <- agent_answer(userq, n_results = nres)
+            txt_html <- .format_agent_reply(ans$text)
+
+            # 1) Esseye d'extraire des URLs renvoyées par l'agent
+            urls <- .extract_product_urls(ans$text)
+
+            # 2) Si on a des URLs valides, affiche des cartes depuis les URLs
+            cards <- .render_cards_from_urls(urls, max_n = nres)
+
+            # 3) Fallback : si pas d'URL, on tente une recherche directe
+            if (is.null(cards)) {
+              srch <- tryCatch(mml_search(userq, limit = nres), error = function(e) NULL)
+              if (!is.null(srch) && length(srch$results)) {
+                cards <- .render_cards_from_results(srch$results, max_n = nres)
+              }
+            }
+
+            if (!is.null(cards)) {
+              paste0(txt_html, if (nzchar(txt_html)) "<hr/>" else "", as.character(cards))
+            } else {
+              # dernier repli : juste le texte
+              txt_html
+            }
+          })
+        }, error = function(e){
+          paste0(
+            "<div class='error'>",
+            htmltools::htmlEscape(conditionMessage(e)),
+            "</div>"
+          )
+        })
       }
 
+      append_msg("assistant", html, is_html = TRUE)
       session$sendCustomMessage("scroll_bottom", list(id = ns("log")))
     })
   })
 }
-
-## To be copied in the UI
-# mod_chat_ui("chat_1")
-
-## To be copied in the server
-# mod_chat_server("chat_1")

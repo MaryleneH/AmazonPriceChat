@@ -13,6 +13,7 @@ Imports:
     bslib,
     config,
     DBI,
+    DT,
     duckdb,
     ellmer,
     glue,

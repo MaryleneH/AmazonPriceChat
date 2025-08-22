@@ -84,3 +84,42 @@ html, body{
 @media (max-width: 768px){
   .bubble{ max-width: 90%; }
 }
+
+.product-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+  gap: 14px;
+  margin-top: 10px;
+}
+
+.product-card {
+  border: 1px solid #eee;
+  border-radius: 14px;
+  padding: 10px;
+  background: #fff;
+  box-shadow: 0 1px 3px rgba(0,0,0,.04);
+}
+
+.product-img {
+  width: 100%;
+  height: 190px;
+  object-fit: cover;
+  border-radius: 10px;
+  display: block;
+}
+
+.product-meta {
+  margin-top: 8px;
+}
+
+.product-title a {
+  text-decoration: none;
+  color: #111;
+  font-weight: 600;
+}
+
+.product-price {
+  margin-top: 4px;
+  font-weight: 700;
+}
+
