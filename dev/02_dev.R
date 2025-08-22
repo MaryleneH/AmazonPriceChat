@@ -34,9 +34,12 @@ golem::add_utils("helpers", with_test = TRUE)
 
 usethis::use_r("provider")
 usethis::use_r("shopify-provider")
+usethis::use_r("mml_provider")
+usethis::use_r("storage")
 usethis::use_r("healthcheck")
 usethis::use_r("llm_client")
 usethis::use_r("llm_route")
+usethis::use_r("renderers")
 
 ## Mes dépendances
 usethis::use_package("htmltools")
@@ -45,6 +48,13 @@ usethis::use_package("ellmer")
 usethis::use_package("mcptools")
 usethis::use_package("jsonlite")
 usethis::use_package("glue")
+usethis::use_package("httr2")
+usethis::use_package("xml2")
+usethis::use_package("rvest")
+usethis::use_package("jsonlite")
+usethis::use_package("DBI")
+usethis::use_package("duckdb")
+usethis::use_package("arrow")
 
 ## External resources
 ## Creates .js and .css files at inst/app/www

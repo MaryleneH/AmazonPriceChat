@@ -1,29 +1,20 @@
-# --- Shopify MCP provider -----------------------------------------------
+# --- Utils ---------------------------------------------------------------
 
-#' shopify_mcp_endpoint
-#'
-#' @returns
-#' @export
-#'
-#' @examples
+sanitize_domain <- function(x){
+  x <- trimws(x)
+  x <- sub("^https?://", "", x)
+  sub("/+$", "", x)
+}
+`%||%` <- function(x,y) if (is.null(x)) y else x
+
+# --- Endpoint & requête JSON-RPC ----------------------------------------
+
 shopify_mcp_endpoint <- function(){
-  dom <- trimws(Sys.getenv("SHOPIFY_STORE_DOMAIN"))
+  dom <- sanitize_domain(Sys.getenv("SHOPIFY_STORE_DOMAIN"))
   if (!nzchar(dom)) stop("SHOPIFY_STORE_DOMAIN manquant dans .Renviron")
-  if (!grepl("\\.myshopify\\.com$", dom))
-    warning("SHOPIFY_STORE_DOMAIN devrait être un domaine myshopify.com (dev store).")
   sprintf("https://%s/api/mcp", dom)
 }
 
-#' .shopify_req
-#'
-#' @param method
-#' @param params
-#' @param id
-#'
-#' @returns
-#' @export
-#'
-#' @examples
 .shopify_req <- function(method, params = list(), id = 1L){
   endpoint <- shopify_mcp_endpoint()
   body <- list(jsonrpc = "2.0", method = method, id = id, params = params)
@@ -32,64 +23,42 @@ shopify_mcp_endpoint <- function(){
     httr2::req_body_json(body) |>
     httr2::req_perform()
   ct <- httr2::resp_content_type(resp)
-  if (!grepl("json", tolower(ct))) {
-    stop("Réponse non-JSON depuis ", endpoint, " (Content-Type: ", ct, ").")
-  }
+  if (!grepl("json", tolower(ct))) stop("Réponse non-JSON depuis ", endpoint, " (Content-Type: ", ct, ").")
   httr2::resp_body_json(resp)
 }
 
-#' shopify_tools_list
-#'
-#' @returns
-#' @export
-#'
-#' @examples
 shopify_tools_list <- function(){
   .shopify_req("tools/list", params = list())
 }
 
+# --- Recherche produits ---------------------------------------------------
 
-#' shopify_search
-#'
-#' @description
-#' Recherche produits (query + context obligatoires ; country/lang/limit optionnels)
-#'
-#'
-#' @param q
-#' @param page
-#' @param after
-#' @param country
-#' @param language
-#' @param limit
-#'
-#' @returns
-#' @export
-#'
-#' @examples
-shopify_search <- function(q, page = 1, after = NULL,
-                           country = "FR", language = "FR", limit = 10) {
-  args <- list(
-    query   = q,
-    context = "reader",
-    country = country,
-    language = language,
-    limit   = limit
-  )
+shopify_search <- function(q, limit = 10, after = NULL, country = NULL, language = NULL){
+  args <- list(query = q, context = "reader", limit = limit)
   if (!is.null(after)) args$after <- after
+  if (!is.null(country))  args$country  <- country
+  if (!is.null(language)) args$language <- language
 
-  rsp <- .shopify_req("tools/call",
-                      params = list(name = "search_shop_catalog", arguments = args))
-  items <- rsp$result$items %||% list()
+  # 1) sans locale
+  rsp <- .shopify_req("tools/call", params = list(name="search_shop_catalog", arguments=args))
+  items <- rsp$result$items
 
-  results <- lapply(items, function(x){
+  # 2) fallback FR si 0
+  if (length(items) == 0) {
+    args$country  <- "FR"; args$language <- "FR"
+    rsp <- .shopify_req("tools/call", params = list(name="search_shop_catalog", arguments=args))
+    items <- rsp$result$items
+  }
+
+  results <- lapply(items %||% list(), function(x){
     amt <- suppressWarnings(as.numeric(x$price$amount %||% NA_real_))
     list(
-      asin = x$variant_id %||% x$product_id %||% NA_character_, # identifiant interne
+      id    = x$variant_id %||% x$product_id %||% NA_character_,
       title = x$title %||% "",
       brand = x$vendor %||% "",
       price = list(amount = amt, currency = x$price$currency %||% "EUR"),
-      detail_page_url = x$url %||% "#",
-      image_url = x$image_url %||% NULL
+      url   = x$url %||% "#",
+      image = x$image_url %||% NULL
     )
   })
 
@@ -104,21 +73,40 @@ shopify_search <- function(q, page = 1, after = NULL,
   )
 }
 
-#' shopify_get_items
-#'
-#' @description
-#' Récupération par IDs : pour ce MVP, on re-cherche par ID/texte
-#'
-#'
-#' @param ids
-#'
-#' @returns
-#' @export
-#'
-#' @examples
-shopify_get_items <- function(ids) {
-  found <- unlist(lapply(ids, function(id) shopify_search(id)$results), recursive = FALSE)
-  list(items = found, fetched_at = Sys.time())
+# --- Récupérer le prix d'un produit par URL -------------------------------
+
+shopify_price_by_url <- function(product_url){
+  # extrait la dernière partie utile (handle)
+  path <- sub("^https?://[^/]+/", "", product_url)
+  handle <- sub(".*/products/([^/?#]+).*", "\\1", path)
+  if (identical(handle, path)) handle <- basename(path) # fallback
+
+  res <- shopify_search(handle, limit = 10)
+  items <- res$results %||% list()
+
+  # essaie de matcher l'URL exacte (ignorer http/https, slash final)
+  norm <- function(u) sub("/+$","", sub("^https?://", "", u))
+  want <- norm(product_url)
+
+  best <- NULL
+  for (it in items){
+    if (!is.null(it$url) && norm(it$url) == want) { best <- it; break }
+  }
+  if (is.null(best) && length(items)) best <- items[[1]]
+
+  if (is.null(best)) return(NULL)
+  list(
+    title    = best$title,
+    price    = best$price,
+    url      = best$url,
+    image    = best$image,
+    matched  = !is.null(best$url) && norm(best$url) == want
+  )
 }
 
-`%||%` <- function(x,y) if (is.null(x)) y else x
+# --- Adapter "get_items" (MVP : re-cherche par id/texte) ------------------
+
+shopify_get_items <- function(ids){
+  found <- unlist(lapply(ids, function(id) shopify_search(id, limit = 10)$results), recursive = FALSE)
+  list(items = found, fetched_at = Sys.time())
+}
