@@ -40,7 +40,7 @@ mod_chat_server <- function(id){
     ns <- session$ns
     `%||%` <- function(x,y) if (is.null(x)) y else x
 
-    # -- Helpers -------------------------------------------------------------
+    # -- Helpers visuels -----------------------------------------------------
 
     .format_price <- function(p){
       if (is.null(p)) return("")
@@ -140,19 +140,29 @@ mod_chat_server <- function(id){
       append_msg("user", userq)
       shiny::updateTextInput(session, "msg", value = "")
 
+      # On laisse llm_route faire sa vie…
       action <- llm_route(userq)
 
-      if (identical(action$name, "search_amazon")) {
+      # …mais si on est en provider MML, on **force** le chemin agent :
+      provider_is_mml <- identical(tolower(Sys.getenv("PROVIDER")), "mml")
+      force_agent <- provider_is_mml
+
+      if (!force_agent && (identical(action$name, "search_amazon") || identical(action$name, "get_items"))) {
+        # garde le flux Amazon seulement si on n'est pas en mode MML
+        # (sinon on passera dans l'agent)
+      }
+
+      if (!force_agent && identical(action$name, "search_amazon")) {
         res  <- provider_search(action$args$q, action$args$page %||% 1)
         html <- render_search(res)
 
-      } else if (identical(action$name, "get_items")) {
+      } else if (!force_agent && identical(action$name, "get_items")) {
         res  <- provider_get_items(action$args$asins %||% character())
         html <- render_items(res)
 
       } else {
         # ---- Chemin Agent Make My Lemonade --------------------------------
-        # 1) Nombre max demandé par l’utilisateur (via util exportée)
+        # Nombre max demandé par l’utilisateur (utilitaire exporté)
         nres <- extract_n_results(userq, default = 10L)
 
         html <- tryCatch({
@@ -160,26 +170,22 @@ mod_chat_server <- function(id){
                               value = 0, session = session, {
                                 setProgress(0.1, detail = "Analyse de la requête…")
 
-                                # 2) Appel agent LLM (avec n_results déterminé)
                                 ans <- agent_answer(userq, n_results = nres)
 
                                 setProgress(0.45, detail = "Récupération des produits…")
 
-                                # 3) On ignore tout HTML éventuel de l’agent et on reconstruit NOS cartes
-                                txt_html <- .format_agent_reply(ans$text %||% "")
-                                urls     <- .extract_product_urls(ans$text %||% "")
+                                # On reconstruit TOUJOURS nos cartes, et on coupe à nres
+                                txt_html <- .format_agent_reply(ans$raw$agent_text %||% ans$text %||% "")
+                                urls     <- .extract_product_urls(ans$raw$agent_text %||% ans$text %||% "")
 
-                                # Essai via URLs détectées
                                 cards <- NULL
                                 if (length(urls)) {
-                                  cards <- .render_cards_from_urls(urls, max_n = nres)  # <- coupe stricte
+                                  cards <- .render_cards_from_urls(urls, max_n = nres)
                                 }
-
-                                # Fallback via recherche directe, mais LIMITÉE
                                 if (is.null(cards)) {
                                   srch <- tryCatch(mml_search(userq, limit = max(nres, 20L)), error = function(e) NULL)
                                   if (!is.null(srch) && length(srch$results)) {
-                                    cards <- .render_cards_from_results(srch$results, max_n = nres)  # <- coupe stricte
+                                    cards <- .render_cards_from_results(srch$results, max_n = nres)
                                   }
                                 }
 
