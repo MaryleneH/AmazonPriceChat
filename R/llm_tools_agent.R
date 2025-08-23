@@ -223,67 +223,186 @@ llm_agent_dispatch <- function(tool_call){
 }
 
 # --- BOUCLE AGENT -----------------------------------------------------------
-
+#' Réponse agent MML strictement bornée et robuste aux phrases naturelles
+#' @param prompt Question utilisateur (ex: "Donne moi le prix des pulls, deux articles maximum")
+#' @param n_results Borne max si l'utilisateur ne précise rien
+#' @return list(text, raw)
 agent_answer <- function(prompt, n_results = 10L){
-  sys <- list(
-    role    = "system",
-    content = paste(
-      "Tu es un assistant shopping focalisé sur le site Make My Lemonade.",
-      "Quand on te demande des prix, utilise en priorité les OUTILS fournis:",
-      "- mml_price_by_url quand une URL produit est donnée ;",
-      "- mml_search pour trouver des produits par mots-clés.",
-      "Présente des listes courtes (<= ", n_results, "), avec pour CHAQUE produit:",
-      "1) le titre ; 2) le prix ; 3) l'URL exacte de la page produit.",
-      "Toujours inclure l'URL explicite pour chaque produit."
-    )
+  `%||%` <- function(x,y) if (is.null(x)) y else x
+
+  # ---------------- Helpers parsing ----------------
+  .num_words <- c(
+    "un"=1,"une"=1,"deux"=2,"trois"=3,"quatre"=4,"cinq"=5,
+    "six"=6,"sept"=7,"huit"=8,"neuf"=9,"dix"=10
   )
-  user <- list(role = "user", content = paste0(prompt, " (max ", n_results, " éléments)"))
-
-  msgs <- list(sys, user)
-  res  <- llm_agent_chat(msgs)
-
-  loops <- 0L
-  repeat {
-    loops <- loops + 1L
-    choice    <- .first_choice(res)
-    call_kind <- attr(res, "call_kind") %||% "tools"
-    msg       <- choice$message %||% list()
-
-    if (identical(call_kind, "tools")) {
-      tcalls <- msg$tool_calls %||% list()
-      if (length(tcalls)) {
-        # tracer l'appel assistant
-        msgs <- append(msgs, list(list(role = "assistant", content = NULL, tool_calls = tcalls)))
-        # exécuter les tools
-        for (tc in tcalls) {
-          out <- llm_agent_dispatch(tc)
-          msgs <- append(msgs, list(list(role = "tool", content = out, tool_call_id = tc$id)))
-        }
-        # relance
-        res <- llm_agent_chat(msgs)
-        if (loops >= 3L) break
-        next
-      }
-    } else { # functions (legacy)
-      fcall <- msg$`function_call`
-      if (length(fcall)) {
-        tc <- list(id = paste0("fn_", as.integer(Sys.time())),
-                   `function` = list(name = fcall$name, arguments = fcall$arguments))
-        out <- llm_agent_dispatch(tc)
-        msgs <- append(msgs, list(list(role = "function", name = fcall$name, content = out)))
-        res <- llm_agent_chat(msgs)
-        if (loops >= 3L) break
-        next
-      }
+  .to_num <- function(x){
+    x <- tolower(trimws(x))
+    if (nzchar(x) && grepl("^[0-9]+$", x)) return(as.integer(x))
+    if (x %in% names(.num_words)) return(as.integer(.num_words[[x]]))
+    NA_integer_
+  }
+  .parse_n <- function(txt, default = n_results){
+    t <- tolower(txt)
+    # "max 2", "au plus 3", "2 articles/produits"
+    m <- regexpr("(?:max(?:imum)?|au plus|au maximum)\\s*(\\d+)", t, perl=TRUE)
+    if (m[1] > 0) return(max(1L, .to_num(sub(".*?(\\d+).*","\\1", regmatches(t,m)))))
+    m <- regexpr("(\\d+)\\s*(?:articles?|produits?|r[ée]sultats?)", t, perl=TRUE)
+    if (m[1] > 0) return(max(1L, .to_num(sub("^(\\d+).*","\\1", regmatches(t,m)))))
+    # lettres
+    rxw <- "\\b(un|une|deux|trois|quatre|cinq|six|sept|huit|neuf|dix)\\b"
+    m <- regexpr(paste0("(?:max(?:imum)?|au plus|au maximum)\\s*", rxw), t, perl=TRUE)
+    if (m[1] > 0) return(max(1L, .to_num(sub(".*?\\b(un|une|deux|trois|quatre|cinq|six|sept|huit|neuf|dix)\\b.*","\\1", regmatches(t,m)))))
+    m <- regexpr(paste0(rxw, "\\s*(?:articles?|produits?|r[ée]sultats?)"), t, perl=TRUE)
+    if (m[1] > 0) return(max(1L, .to_num(sub(".*?\\b(un|une|deux|trois|quatre|cinq|six|sept|huit|neuf|dix)\\b.*","\\1", regmatches(t,m)))))
+    as.integer(default)
+  }
+  .parse_price_max <- function(txt){
+    t <- tolower(txt)
+    rx <- "(?:moins de|sous|budget|<=|≤|jusqu(?:'|e) ?à|max(?:imum)?)\\s*([0-9]+(?:[.,][0-9]+)?)\\s*(?:€|eur|euros?)?"
+    m <- regexpr(rx, t, perl=TRUE)
+    if (m[1] > 0) {
+      v <- sub(".*?([0-9]+(?:[.,][0-9]+)?).*","\\1", regmatches(t,m))
+      v <- as.numeric(gsub(",", ".", v))
+      if (!is.na(v)) return(v)
     }
-
-    break
+    Inf
+  }
+  .extract_urls <- function(s){
+    m <- gregexpr("https?://[^\\s)]+", s, perl=TRUE)
+    u <- regmatches(s, m)[[1]]
+    unique(u[nzchar(u)])
   }
 
-  # message final
-  final_choice <- .first_choice(res)
+  # Mots-clés produits connus + normalisation (pluriels/synonymes -> singulier canonique)
+  .norm_map <- c(
+    "pulls"="pull","pull"="pull","maille"="pull","mailes"="pull","maille(s)?"="pull",
+    "sweat"="sweat","sweats"="sweat",
+    "cardigan"="cardigan","cardigans"="cardigan","gilet"="cardigan","gilets"="cardigan",
+    "jupe"="jupe","jupes"="jupe",
+    "robe"="robe","robes"="robe",
+    "chemise"="chemise","chemises"="chemise",
+    "pantalon"="pantalon","pantalons"="pantalon","jean"="jean","jeans"="jean",
+    "t-shirt"="t-shirt","tshirts"="t-shirt","tee-shirt"="t-shirt","tee"="t-shirt","tees"="t-shirt",
+    "short"="short","shorts"="short",
+    "manteau"="manteau","manteaux"="manteau","trench"="trench","blouson"="manteau","veste"="veste","vestes"="veste",
+    "bodys"="body","body"="body","bodies"="body",
+    "top"="top","tops"="top"
+  )
+  .extract_terms <- function(txt){
+    t <- tolower(txt)
+    # retire URLs et mentions de quantité/prix
+    t <- gsub("https?://[^\\s)]+", " ", t)
+    t <- gsub("(?:moins de|sous|budget|<=|≤|jusqu(?:'|e) ?à|max(?:imum)?)\\s*[0-9]+(?:[.,][0-9]+)?\\s*(?:€|eur|euros?)?", " ", t, perl=TRUE)
+    # tokenize simple
+    toks <- unlist(strsplit(gsub("[^[:alnum:]-]+"," ", t), "\\s+"))
+    toks <- toks[nchar(toks) >= 3]
+    # stopwords FR les + courants
+    sw <- c("donne","donnez","moi","le","la","les","du","des","de","pour","prix",
+            "quel","quelle","quels","quelles","avec","sans","sur","et","ou",
+            "maximum","max","articles","produits","resultats","résultats","article","produit")
+    toks <- setdiff(toks, sw)
+    # normalise
+    norm <- function(w){
+      if (w %in% names(.norm_map)) return(.norm_map[[w]])
+      # pluriels basiques
+      w <- sub("s$", "", w)
+      w
+    }
+    out <- unique(vapply(toks, norm, character(1)))
+    # garde uniquement les termes présents dans le vocabulaire produit si on en a
+    vocab <- unique(unname(.norm_map))
+    keep  <- intersect(out, vocab)
+    if (length(keep)) keep else out
+  }
+
+  .fmt_price <- function(a){
+    if (is.null(a) || is.na(a)) return("—")
+    paste0(format(round(as.numeric(a), 2), nsmall = 2, decimal.mark = ","), " €")
+  }
+
+  # ---------------- Contraintes de la demande ----------------
+  n_target  <- max(1L, .parse_n(prompt, n_results))
+  n_target  <- min(n_target, n_results)
+  price_max <- .parse_price_max(prompt)
+
+  # ---------------- 1) URLs explicites ----------------
+  urls  <- .extract_urls(prompt)
+  items <- list()
+  if (length(urls)) {
+    seen <- character()
+    for (u in urls) {
+      if (u %in% seen) next
+      seen <- c(seen, u)
+      it <- try(mml_price_by_url(u), silent = TRUE)
+      if (inherits(it, "try-error") || is.null(it)) next
+      amt <- it$price$amount %||% NA_real_
+      if (is.finite(price_max) && is.numeric(amt) && !is.na(amt) && amt > price_max) next
+      items[[length(items)+1L]] <- it
+      if (length(items) >= n_target) break
+    }
+  }
+
+  # ---------------- 2) Recherche par mots-clés robustes ----------------
+  if (length(items) < n_target) {
+    terms <- .extract_terms(prompt)
+    # si on n'a rien trouvé, tente quelques alias courants par défaut
+    if (!length(terms)) terms <- c("pull","robe","jupe","t-shirt","jean")
+
+    seen <- c(urls %||% character())
+    # Essaie plusieurs termes jusqu'à atteindre n_target
+    for (term in terms) {
+      sr <- try(mml_search(term, limit = max(50L, n_target*5L)), silent = TRUE)
+      if (inherits(sr, "try-error") || !length(sr$results %||% list())) next
+      cand <- sr$results
+
+      # filtre prix
+      if (is.finite(price_max)) {
+        cand <- Filter(function(it){
+          amt <- it$price$amount %||% NA_real_
+          is.na(amt) || (!is.na(amt) && amt <= price_max)
+        }, cand)
+      }
+      if (!length(cand)) next
+
+      # déduplique par URL et ajoute
+      for (it in cand) {
+        u <- it$url %||% ""
+        if (!nzchar(u) || u %in% seen) next
+        seen <- c(seen, u)
+        items[[length(items)+1L]] <- it
+        if (length(items) >= n_target) break
+      }
+      if (length(items) >= n_target) break
+    }
+  }
+
+  # ---------------- Sortie ----------------
+  if (!length(items)) {
+    return(list(
+      text = "Aucun produit correspondant à ta demande n’a été trouvé.",
+      raw  = list(n_target=n_target, price_max=price_max, tried_terms = .extract_terms(prompt))
+    ))
+  }
+
+  items <- head(items, n_target)
+
+  bullets <- vapply(items, function(it){
+    sprintf("- **%s** — %s — %s",
+            it$title %||% "Produit",
+            .fmt_price(it$price$amount %||% NA_real_),
+            it$url %||% "")
+  }, character(1))
+
   list(
-    text = final_choice$message$content %||% "",
-    raw  = res
+    text = paste(c(
+      sprintf("Voici %d suggestion(s)%s :", length(items),
+              if (is.finite(price_max)) sprintf(" (≤ %.2f €)", price_max) else ""),
+      "", bullets), collapse = "\n"),
+    raw  = list(
+      n_target   = n_target,
+      price_max  = price_max,
+      used_urls  = urls,
+      tried_terms= .extract_terms(prompt)
+    )
   )
 }
