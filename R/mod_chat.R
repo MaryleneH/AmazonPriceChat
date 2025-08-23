@@ -42,6 +42,33 @@ mod_chat_server <- function(id){
 
     # -- Helpers -------------------------------------------------------------
 
+    # >>> NOUVEAU : extraction robuste du nombre d'articles demandé
+    .extract_n_results <- function(text, default = 10L){
+      if (is.null(text) || !nzchar(text)) return(default)
+      s <- tolower(trimws(text))
+
+      # chiffres explicites
+      nums <- regmatches(s, gregexpr("\\d+", s))[[1]]
+      if (length(nums) > 0) {
+        n <- suppressWarnings(as.integer(nums[1]))
+        if (!is.na(n)) return(max(1L, min(n, default)))
+      }
+
+      # nombres en lettres (fr)
+      dict <- c(
+        "un"=1,"une"=1,"deux"=2,"trois"=3,"quatre"=4,"cinq"=5,
+        "six"=6,"sept"=7,"huit"=8,"neuf"=9,"dix"=10,
+        "quelques"=5,"quelque"=5
+      )
+      for (w in names(dict)) {
+        if (grepl(paste0("\\b", w, "\\b"), s, perl = TRUE)) {
+          return(max(1L, min(as.integer(dict[[w]]), default)))
+        }
+      }
+
+      default
+    }
+
     .format_price <- function(p){
       if (is.null(p) || is.null(p$amount)) return("")
       cur <- p$currency %||% "EUR"
@@ -52,15 +79,13 @@ mod_chat_server <- function(id){
 
     .extract_product_urls <- function(txt){
       if (is.null(txt) || !nzchar(txt)) return(character())
-      # récupère des URLs vers makemylemonade.com (peut inclure /fr-xx/products/)
       m <- gregexpr("(https?://[^\\s)\\]]*makemylemonade\\.com[^\\s)\\]]*)", txt, perl = TRUE)
       urls <- regmatches(txt, m)[[1]]
-      urls <- unique(gsub("[\\)\\]\\.,]+$", "", urls)) # nettoie ponctuation finale
+      urls <- unique(gsub("[\\)\\]\\.,]+$", "", urls))
       urls
     }
 
     .card_html <- function(title, price_txt, url, img){
-      # Une carte produit simple (utilise classes .product-card si ton CSS les définit)
       htmltools::tags$div(
         class = "product-card",
         style = "display:flex;gap:12px;align-items:flex-start;border:1px solid #eee;border-radius:12px;padding:10px;margin:8px 0;",
@@ -89,11 +114,12 @@ mod_chat_server <- function(id){
       if (length(urls) == 0) return(NULL)
       urls <- utils::head(urls, max_n)
       found <- lapply(urls, function(u){
-        # utilise ta fonction mml_price_by_url(u)
         info <- tryCatch(mml_price_by_url(u), error = function(e) NULL)
         if (is.null(info)) return(NULL)
         price_txt <- .format_price(info$price)
-        .card_html(info$title %||% "", price_txt, info$url %||% u, info$image %||% "")
+        img <- info$image %||% ""
+        if (isTRUE(startsWith(img, "//"))) img <- paste0("https:", img)
+        .card_html(info$title %||% "", price_txt, info$url %||% u, img)
       })
       found <- Filter(Negate(is.null), found)
       if (!length(found)) return(NULL)
@@ -101,12 +127,9 @@ mod_chat_server <- function(id){
     }
 
     .format_agent_reply <- function(x){
-      # petit formateur pour le texte de l’agent (italiques / gras / sauts)
       if (is.null(x) || !nzchar(x)) return("")
       x <- gsub("\n", "<br/>", htmltools::htmlEscape(x), fixed = TRUE)
-      # gras **...** -> <b>...</b>
       x <- gsub("\\*\\*(.+?)\\*\\*", "<b>\\1</b>", x, perl = TRUE)
-      # italiques *...* -> <i>...</i>
       x <- gsub("(?<!\\*)\\*(?!\\*)(.+?)(?<!\\*)\\*(?!\\*)", "<i>\\1</i>", x, perl = TRUE)
       x
     }
@@ -137,7 +160,6 @@ mod_chat_server <- function(id){
       append_msg("user", userq)
       shiny::updateTextInput(session, "msg", value = "")
 
-      # Router (tu conserves llm_route pour Amazon plus tard)
       action <- llm_route(userq)
 
       if (identical(action$name, "search_amazon")) {
@@ -150,39 +172,41 @@ mod_chat_server <- function(id){
 
       } else {
         # ---- Chemin Agent Make My Lemonade --------------------------------
-        nres <- .extract_n_results(userq, default = 10L)  # si tu as déjà ce helper
+        nres <- .extract_n_results(userq, default = 10L)
+
         html <- tryCatch({
           shiny::withProgress(message = "Je cherche sur Make My Lemonade…", value = 0.1, {
             ans <- agent_answer(userq, n_results = nres)
-            txt_html <- .format_agent_reply(ans$text)
+            raw_txt <- ans$text %||% ""
 
-            # 1) Esseye d'extraire des URLs renvoyées par l'agent
-            urls <- .extract_product_urls(ans$text)
+            # Si l'agent renvoie déjà du HTML de cartes, on l'affiche tel quel
+            if (grepl("<div|<img|class=\\\"prod-grid\\\"|class=\\\"product-card\\\"", raw_txt)) {
+              final <- raw_txt
+            } else {
+              # Sinon on formate le texte + essaie d'afficher des cartes depuis les URLs
+              txt_html <- .format_agent_reply(raw_txt)
+              urls     <- .extract_product_urls(raw_txt)
+              cards    <- .render_cards_from_urls(urls, max_n = nres)
 
-            # 2) Si on a des URLs valides, affiche des cartes depuis les URLs
-            cards <- .render_cards_from_urls(urls, max_n = nres)
+              if (is.null(cards)) {
+                # Fallback : recherche directe limitée à nres
+                srch <- tryCatch(mml_search(userq, limit = nres), error = function(e) NULL)
+                if (!is.null(srch) && length(srch$results)) {
+                  cards <- .render_cards_from_results(srch$results, max_n = nres)
+                }
+              }
 
-            # 3) Fallback : si pas d'URL, on tente une recherche directe
-            if (is.null(cards)) {
-              srch <- tryCatch(mml_search(userq, limit = nres), error = function(e) NULL)
-              if (!is.null(srch) && length(srch$results)) {
-                cards <- .render_cards_from_results(srch$results, max_n = nres)
+              final <- if (!is.null(cards)) {
+                paste0(if (nzchar(txt_html)) paste0(txt_html, "<hr/>") else "", as.character(cards))
+              } else {
+                txt_html
               }
             }
 
-            if (!is.null(cards)) {
-              paste0(txt_html, if (nzchar(txt_html)) "<hr/>" else "", as.character(cards))
-            } else {
-              # dernier repli : juste le texte
-              txt_html
-            }
+            final
           })
         }, error = function(e){
-          paste0(
-            "<div class='error'>",
-            htmltools::htmlEscape(conditionMessage(e)),
-            "</div>"
-          )
+          paste0("<div class='error'>", htmltools::htmlEscape(conditionMessage(e)), "</div>")
         })
       }
 
