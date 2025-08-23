@@ -43,6 +43,7 @@ usethis::use_r("llm_tools_agent")
 usethis::use_r("llm_client")
 usethis::use_r("llm_route")
 usethis::use_r("renderers")
+usethis::use_r("extract_n_results")
 
 ## Mes dépendances
 usethis::use_package("htmltools")

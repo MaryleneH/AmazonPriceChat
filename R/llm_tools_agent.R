@@ -298,6 +298,7 @@ agent_answer <- function(prompt, n_results = 10L){
       "Quand on te demande des prix, utilise en priorité les OUTILS fournis :",
       "- mml_price_by_url quand une URL produit est donnée ;",
       "- mml_search pour trouver des produits par mots-clés.",
+      "- extract_n_results pour trouver le nombre de produit à afficher.",
       "Tu DOIS appeler au moins un outil si la requête concerne des produits.",
       "Ne réponds JAMAIS 'Aucun résultat' sans avoir essayé mml_search.",
       "Pour choisir le nombre d'articles à afficher, tu cherches le prix demandé par l'utilisateur",

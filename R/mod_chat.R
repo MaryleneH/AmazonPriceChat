@@ -42,37 +42,15 @@ mod_chat_server <- function(id){
 
     # -- Helpers -------------------------------------------------------------
 
-    # >>> NOUVEAU : extraction robuste du nombre d'articles demandé
-    .extract_n_results <- function(text, default = 10L){
-      if (is.null(text) || !nzchar(text)) return(default)
-      s <- tolower(trimws(text))
-
-      # chiffres explicites
-      nums <- regmatches(s, gregexpr("\\d+", s))[[1]]
-      if (length(nums) > 0) {
-        n <- suppressWarnings(as.integer(nums[1]))
-        if (!is.na(n)) return(max(1L, min(n, default)))
-      }
-
-      # nombres en lettres (fr)
-      dict <- c(
-        "un"=1,"une"=1,"deux"=2,"trois"=3,"quatre"=4,"cinq"=5,
-        "six"=6,"sept"=7,"huit"=8,"neuf"=9,"dix"=10,
-        "quelques"=5,"quelque"=5
-      )
-      for (w in names(dict)) {
-        if (grepl(paste0("\\b", w, "\\b"), s, perl = TRUE)) {
-          return(max(1L, min(as.integer(dict[[w]]), default)))
-        }
-      }
-
-      default
-    }
-
     .format_price <- function(p){
-      if (is.null(p) || is.null(p$amount)) return("")
-      cur <- p$currency %||% "EUR"
-      amt <- tryCatch(as.numeric(p$amount), error = function(e) NA_real_)
+      if (is.null(p)) return("")
+      if (is.list(p) && !is.null(p$amount)) {
+        cur <- p$currency %||% "EUR"
+        amt <- suppressWarnings(as.numeric(p$amount))
+      } else {
+        cur <- "EUR"
+        amt <- suppressWarnings(as.numeric(p))
+      }
       if (is.na(amt)) return("")
       paste0(formatC(amt, big.mark = " ", decimal.mark = ",", digits = 2, format = "f"), " ", cur)
     }
@@ -87,7 +65,7 @@ mod_chat_server <- function(id){
 
     .card_html <- function(title, price_txt, url, img){
       htmltools::tags$div(
-        class = "product-card",
+        class = "prod-card",
         style = "display:flex;gap:12px;align-items:flex-start;border:1px solid #eee;border-radius:12px;padding:10px;margin:8px 0;",
         if (!is.null(img) && nzchar(img))
           htmltools::tags$img(src = img, style = "width:80px;height:100px;object-fit:cover;border-radius:8px;"),
@@ -105,8 +83,10 @@ mod_chat_server <- function(id){
       if (length(items) == 0) return(NULL)
       keep <- utils::head(items, max_n)
       htmltools::tagList(lapply(keep, function(it){
+        img <- it$image %||% it$image_url %||% ""
+        if (isTRUE(startsWith(img, "//"))) img <- paste0("https:", img)
         price_txt <- .format_price(it$price)
-        .card_html(it$title %||% "", price_txt, it$url %||% "", it$image %||% "")
+        .card_html(it$title %||% "", price_txt, it$url %||% "", img)
       }))
     }
 
@@ -172,39 +152,48 @@ mod_chat_server <- function(id){
 
       } else {
         # ---- Chemin Agent Make My Lemonade --------------------------------
-        nres <- .extract_n_results(userq, default = 10L)
+        # 1) Nombre max demandé par l’utilisateur (via util exportée)
+        nres <- extract_n_results(userq, default = 10L)
 
         html <- tryCatch({
-          shiny::withProgress(message = "Je cherche sur Make My Lemonade…", value = 0.1, {
-            ans <- agent_answer(userq, n_results = nres)
-            raw_txt <- ans$text %||% ""
+          shiny::withProgress(message = "Je cherche sur Make My Lemonade…",
+                              value = 0, session = session, {
+                                setProgress(0.1, detail = "Analyse de la requête…")
 
-            # Si l'agent renvoie déjà du HTML de cartes, on l'affiche tel quel
-            if (grepl("<div|<img|class=\\\"prod-grid\\\"|class=\\\"product-card\\\"", raw_txt)) {
-              final <- raw_txt
-            } else {
-              # Sinon on formate le texte + essaie d'afficher des cartes depuis les URLs
-              txt_html <- .format_agent_reply(raw_txt)
-              urls     <- .extract_product_urls(raw_txt)
-              cards    <- .render_cards_from_urls(urls, max_n = nres)
+                                # 2) Appel agent LLM (avec n_results déterminé)
+                                ans <- agent_answer(userq, n_results = nres)
 
-              if (is.null(cards)) {
-                # Fallback : recherche directe limitée à nres
-                srch <- tryCatch(mml_search(userq, limit = nres), error = function(e) NULL)
-                if (!is.null(srch) && length(srch$results)) {
-                  cards <- .render_cards_from_results(srch$results, max_n = nres)
-                }
-              }
+                                setProgress(0.45, detail = "Récupération des produits…")
 
-              final <- if (!is.null(cards)) {
-                paste0(if (nzchar(txt_html)) paste0(txt_html, "<hr/>") else "", as.character(cards))
-              } else {
-                txt_html
-              }
-            }
+                                # 3) On ignore tout HTML éventuel de l’agent et on reconstruit NOS cartes
+                                txt_html <- .format_agent_reply(ans$text %||% "")
+                                urls     <- .extract_product_urls(ans$text %||% "")
 
-            final
-          })
+                                # Essai via URLs détectées
+                                cards <- NULL
+                                if (length(urls)) {
+                                  cards <- .render_cards_from_urls(urls, max_n = nres)  # <- coupe stricte
+                                }
+
+                                # Fallback via recherche directe, mais LIMITÉE
+                                if (is.null(cards)) {
+                                  srch <- tryCatch(mml_search(userq, limit = max(nres, 20L)), error = function(e) NULL)
+                                  if (!is.null(srch) && length(srch$results)) {
+                                    cards <- .render_cards_from_results(srch$results, max_n = nres)  # <- coupe stricte
+                                  }
+                                }
+
+                                setProgress(0.9, detail = "Mise en forme…")
+
+                                final <- if (!is.null(cards)) {
+                                  paste0(if (nzchar(txt_html)) paste0(txt_html, "<hr/>") else "", as.character(cards))
+                                } else {
+                                  txt_html
+                                }
+
+                                setProgress(1)
+                                final
+                              })
         }, error = function(e){
           paste0("<div class='error'>", htmltools::htmlEscape(conditionMessage(e)), "</div>")
         })
