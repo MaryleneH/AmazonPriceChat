@@ -156,10 +156,13 @@ llm_agent_chat <- function(messages,
        "tu peux aussi forcer LLM_TOOLS_MODE=functions.")
 }
 
+# ---------------------------------------------------------------------
 # Extraction robuste du premier "choice"
 .first_choice <- function(res){
   ch <- res$choices
+  # Liste standard
   if (is.list(ch) && !is.data.frame(ch)) return(ch[[1]])
+  # Data.frame aplati (certains parseurs)
   if (is.data.frame(ch)) {
     row1 <- ch[1, , drop = FALSE]
     message <- NULL
@@ -172,8 +175,11 @@ llm_agent_chat <- function(messages,
       msg_fcall   <- row1[["message.function_call"]][[1]] %||% NULL
       message <- list(role = msg_role, content = msg_content, tool_calls = msg_tcalls, `function_call` = msg_fcall)
     }
-    return(list(index = row1[["index"]][[1]] %||% 0L, message = message,
-                finish_reason = row1[["finish_reason"]][[1]] %||% NULL))
+    return(list(
+      index = row1[["index"]][[1]] %||% 0L,
+      message = message,
+      finish_reason = row1[["finish_reason"]][[1]] %||% NULL
+    ))
   }
   stop("Forme inattendue de 'choices'.")
 }
@@ -215,37 +221,73 @@ llm_agent_dispatch <- function(tool_call){
   list()
 }
 
-.extract_filters_llm <- function(prompt, default_n = 10L){
-  # Nécessite llm_chat() (client simple OpenAI-compatible)
-  sys <- list(
-    role    = "system",
-    content = paste(
-      "Tu es un extracteur de contraintes pour des requêtes shopping Make My Lemonade.",
-      "Réponds UNIQUEMENT en JSON compact valide, sans texte autour.",
-      'Schéma: {"max_items": int, "price_max": number|null, "include": [string]}.',
-      "Comprends les nombres en lettres (ex: 'deux' => 2).",
-      "Si rien n'est précisé: max_items = ", default_n, ", price_max = null, include = []."
-    )
+# Fallback extraction heuristique du nombre demandé dans le prompt
+.extract_max_from_prompt <- function(prompt, default_n = 10L){
+  s <- tolower(prompt)
+  # nombre explicite
+  num <- regmatches(s, gregexpr("\\b([0-9]{1,2})\\b", s, perl = TRUE))[[1]]
+  if (length(num)) {
+    n <- suppressWarnings(as.integer(num[1]))
+    if (!is.na(n)) return(max(1L, min(n, default_n)))
+  }
+  # mots FR
+  fr_map <- list(
+    "un|une"=1, "deux"=2, "trois"=3, "quatre"=4, "cinq"=5,
+    "six"=6, "sept"=7, "huit"=8, "neuf"=9,
+    "dix"=10, "onze"=11, "douze"=12, "treize"=13, "quatorze"=14,
+    "quinze"=15, "seize"=16, "dix[- ]sept"=17, "dix[- ]huit"=18,
+    "dix[- ]neuf"=19, "vingt"=20
   )
-  usr <- list(role = "user", content = prompt)
-  res <- llm_chat(list(sys, usr))
-  msg <- .first_choice(res)$message$content %||% "{}"
-  f   <- .safely_parse_json(msg)
-
-  max_items <- as.integer(f$max_items %||% default_n)
-  if (is.na(max_items) || max_items < 1L) max_items <- default_n
-  max_items <- min(max_items, default_n)  # ne pas dépasser le paramètre n_results passé par l'appelant
-
-  price_max <- suppressWarnings(as.numeric(f$price_max))
-  if (is.null(price_max) || is.na(price_max)) price_max <- Inf
-
-  include <- f$include %||% list()
-  if (is.character(include)) include <- as.list(include)
-
-  list(max_items = max_items, price_max = price_max, include = include)
+  for (pat in names(fr_map)){
+    if (grepl(paste0("\\b(", pat, ")\\b"), s, perl = TRUE)) return(min(fr_map[[pat]], default_n))
+  }
+  default_n
 }
 
-# Heuristique de secours si l'extracteur n'a rien donné
+.extract_filters_llm <- function(prompt, default_n = 10L){
+  out <- list(max_items = default_n, price_max = Inf, include = list())
+
+  # essai via llm_chat (peut ne pas exister si non chargé)
+  got <- try({
+    sys <- list(
+      role    = "system",
+      content = paste(
+        "Tu es un extracteur de contraintes pour des requêtes shopping Make My Lemonade.",
+        "Réponds UNIQUEMENT en JSON compact valide, sans texte autour.",
+        'Schéma: {"max_items": int, "price_max": number|null, "include": [string]}.',
+        "Comprends les nombres en lettres (ex: 'deux' => 2).",
+        "Si rien n'est précisé: max_items = ", default_n, ", price_max = null, include = []."
+      )
+    )
+    usr <- list(role = "user", content = prompt)
+    res <- llm_chat(list(sys, usr))
+    msg <- .first_choice(res)$message$content %||% "{}"
+    .safely_parse_json(msg)
+  }, silent = TRUE)
+
+  if (!inherits(got, "try-error") && length(got)) {
+    # max_items
+    mi <- suppressWarnings(as.integer(got$max_items))
+    if (is.na(mi) || mi < 1L) mi <- .extract_max_from_prompt(prompt, default_n)
+    out$max_items <- min(mi, default_n)
+
+    # price_max
+    pm <- suppressWarnings(as.numeric(got$price_max))
+    if (!is.null(pm) && !is.na(pm)) out$price_max <- pm
+
+    # include
+    inc <- got$include %||% list()
+    if (is.character(inc)) inc <- as.list(inc)
+    out$include <- inc
+  } else {
+    # fallback heuristique
+    out$max_items <- .extract_max_from_prompt(prompt, default_n)
+  }
+
+  out
+}
+
+# Heuristique de secours pour les mots-clés
 .extract_keywords_heuristic <- function(txt){
   s <- tolower(txt)
   cats <- c("pull","pulls","jupe","jupes","robe","robes","chemise","chemises",
@@ -255,7 +297,6 @@ llm_agent_dispatch <- function(tool_call){
   hit <- cats[grepl(paste0("\\b(", paste(cats, collapse="|"), ")\\b"), s)]
   hit <- unique(hit)
   if (length(hit)) return(paste(unique(sub("s$","",hit)), collapse=" "))
-  # fallback: on nettoie un peu
   s <- gsub("https?://\\S+"," ", s)
   s <- gsub("[^[:alnum:]àâäéèêëîïôöùûüç\\s-]", " ", s, perl = TRUE)
   s <- gsub("\\b(donne|donne-moi|le|la|les|des|de|du|un|une|prix|montre|trouve|articles?|maximum|max|moins|que|pour|à)\\b"," ", s)
@@ -269,6 +310,13 @@ llm_agent_dispatch <- function(tool_call){
   m <- gregexpr("(https?://[^\\s)\\]]*makemylemonade\\.com[^\\s)\\]]*)", txt, perl = TRUE)
   u <- regmatches(txt, m)[[1]]
   unique(gsub("[\\)\\]\\.,]+$", "", u))
+}
+
+# Normalisation image
+.norm_img <- function(img){
+  if (is.null(img) || !nzchar(img)) return("")
+  if (startsWith(img, "//")) return(paste0("https:", img))
+  img
 }
 
 # Format prix (affichage texte)
@@ -287,10 +335,10 @@ llm_agent_dispatch <- function(tool_call){
 # Agent principal : prompting + tools, puis filtrage de second temps
 agent_answer <- function(prompt, n_results = 10L){
 
-  # 1) On déduit les contraintes (max_items, price_max, mots clés éventuels)
+  # 1) Contraintes (max_items, price_max, mots-clés éventuels)
   flt <- .extract_filters_llm(prompt, default_n = n_results)
 
-  # 2) Prompting principal (inchangé dans l'esprit)
+  # 2) Prompting principal
   sys <- list(
     role    = "system",
     content = paste(
@@ -298,14 +346,10 @@ agent_answer <- function(prompt, n_results = 10L){
       "Quand on te demande des prix, utilise en priorité les OUTILS fournis :",
       "- mml_price_by_url quand une URL produit est donnée ;",
       "- mml_search pour trouver des produits par mots-clés.",
-      "- extract_n_results pour trouver le nombre de produit à afficher.",
       "Tu DOIS appeler au moins un outil si la requête concerne des produits.",
       "Ne réponds JAMAIS 'Aucun résultat' sans avoir essayé mml_search.",
-      "Pour choisir le nombre d'articles à afficher, tu cherches le prix demandé par l'utilisateur",
-      "Tu choisis également le nombre d'articles, selon le nombre qu'on te demande",
       "Présente des listes courtes (<= ", flt$max_items, "), avec pour CHAQUE produit :",
       "1) le titre ; 2) le prix ; 3) l'URL exacte de la page produit.",
-      "Tu filtres toujours la liste selon les instructions qu'on te donne",
       "Toujours inclure l'URL explicite pour chaque produit."
     )
   )
@@ -350,12 +394,12 @@ agent_answer <- function(prompt, n_results = 10L){
     break
   }
 
-  # 4) On récupère le texte final du modèle
+  # 4) Texte final du modèle
   final_text <- .first_choice(res)$message$content %||% ""
 
-  # 5) On construit la liste finale À PARTIR des données (URLs -> price_by_url OU mml_search),
-  #    puis on filtre (prix max + max_items) et on renvoie un TEXTE avec URLs.
-  #    => mod_chat.R détecte les URLs et affichera les cartes avec image.
+  # 5) Construire la liste finale à partir des données (URLs -> price_by_url OU mml_search),
+  #    filtrer (prix max + max_items) et renvoyer TEXTE avec URLs.
+  #    => mod_chat.R détectera les URLs et affichera les cartes.
 
   # a) URLs proposées par l'agent
   urls <- .extract_product_urls(final_text)
@@ -370,7 +414,7 @@ agent_answer <- function(prompt, n_results = 10L){
         candidates[[length(candidates)+1L]] <- list(
           title = p$title %||% "",
           url   = p$url   %||% u,
-          image = p$image %||% NULL,
+          image = .norm_img(p$image %||% ""),
           price = p$price %||% NULL
         )
       }
@@ -381,14 +425,24 @@ agent_answer <- function(prompt, n_results = 10L){
     # mots-clés : utilise include[] si donné, sinon heuristique
     query <- if (length(flt$include)) paste(unlist(flt$include), collapse = " ") else .extract_keywords_heuristic(prompt)
     if (!nzchar(query)) query <- prompt
-    r <- try(mml_search(query, limit = max(30L, flt$max_items * 5L)), silent = TRUE)
+
+    # Borne stricte du limit pour éviter 0 résultat côté provider
+    provider_cap <- as.integer(Sys.getenv("MML_LIMIT_CAP", "10"))
+    if (is.na(provider_cap) || provider_cap < 1L) provider_cap <- 10L
+    limit_req <- min(provider_cap, max(5L, as.integer(flt$max_items) * 3L))
+
+    r <- try(mml_search(query, limit = limit_req), silent = TRUE)
     if (!inherits(r, "try-error") && length(r$results)) {
-      candidates <- lapply(r$results, function(x) list(
-        title = x$title %||% "",
-        url   = x$url   %||% x$link %||% "",
-        image = x$image_url %||% x$image %||% NULL,
-        price = x$price %||% NULL
-      ))
+      candidates <- lapply(r$results, function(x) {
+        url <- x$url %||% x$link %||% ""
+        list(
+          title = x$title %||% "",
+          url   = url,
+          image = .norm_img(x$image %||% x$image_url %||% ""),
+          price = x$price %||% NULL
+        )
+      })
+      candidates <- Filter(function(it) nzchar(it$url %||% ""), candidates)
     }
   }
 
